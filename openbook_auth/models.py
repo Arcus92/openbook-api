@@ -1223,6 +1223,13 @@ class User(AbstractUser):
                                 created=created)
         return post
 
+    def update_post(self, post_id, text=None):
+        self._check_can_update_post_with_id(post_id)
+        Post = get_post_model()
+        post = Post.objects.get(pk=post_id)
+        post.update(text=text)
+        return post
+
     def create_community_post(self, community_name, text=None, image=None, video=None, created=None):
         self._check_can_post_to_community_with_name(community_name=community_name)
         Post = get_post_model()
@@ -1359,7 +1366,8 @@ class User(AbstractUser):
 
             followed_user_circles_query = Q(circles__id=world_circle_id)
 
-            followed_user_circles_query.add(Q(circles__connections__target_user_id=self.pk, ), Q.OR)
+            followed_user_circles_query.add(Q(circles__connections__target_user_id=self.pk,
+                                              circles__connections__target_connection__circles__isnull=False), Q.OR)
 
             followed_user_query.add(followed_user_circles_query, Q.AND)
 
@@ -1384,27 +1392,20 @@ class User(AbstractUser):
         # Add all community posts
         timeline_posts_query.add(Q(community__memberships__user__id=self.pk), Q.OR)
 
-        followed_users = self.follows.values('followed_user__id')
+        timeline_posts_query.add(Q(circles__connections__target_user_id=self.pk,
+                                   circles__connections__target_connection__circles__isnull=False), Q.OR)
 
-        for followed_user in followed_users:
-            followed_user_id = followed_user['followed_user__id']
+        followed_users = self.follows.values('followed_user_id').cache()
 
-            # Add followed user world circle posts + posts we're encircled with
+        followed_users_ids = [followed_user['followed_user_id'] for followed_user in followed_users]
 
-            followed_user_query = Q(creator_id=followed_user_id)
-
-            followed_user_circles_query = Q(circles__id=world_circle_id)
-
-            followed_user_circles_query.add(Q(circles__connections__target_user_id=self.pk, ), Q.OR)
-
-            followed_user_query.add(followed_user_circles_query, Q.AND)
-
-            timeline_posts_query.add(followed_user_query, Q.OR)
+        timeline_posts_query.add(Q(creator__in=followed_users_ids, circles__id=world_circle_id), Q.OR)
 
         if max_id:
             timeline_posts_query.add(Q(id__lt=max_id), Q.AND)
 
         Post = get_post_model()
+
         return Post.objects.filter(timeline_posts_query).distinct()
 
     def follow_user(self, user, lists_ids=None):
@@ -2055,6 +2056,9 @@ class User(AbstractUser):
 
     def _check_follow_list_id(self, list_id):
         self._check_has_list_with_id(list_id)
+
+    def _check_can_update_post_with_id(self, post_id):
+        self._check_has_post_with_id(post_id=post_id)
 
     def _check_can_post_to_circles_with_ids(self, circles_ids=None):
         for circle_id in circles_ids:
